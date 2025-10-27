@@ -1,4 +1,5 @@
 import math
+import time
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Set
 
@@ -13,7 +14,14 @@ class ScheduleResult:
     total_tardiness: float
 
 
-class _BranchAndBoundSolver:
+@dataclass
+class EnumerationStats:
+    explored_nodes: int
+    elapsed_seconds: float
+    completed: bool
+
+
+class _ExhaustiveScheduler:
     def __init__(
         self,
         batch_ids: List[int],
@@ -22,6 +30,9 @@ class _BranchAndBoundSolver:
         batches_by_order: Dict[int, Set[int]],
         due_dates: Dict[int, float],
         num_picker: int,
+        *,
+        max_seconds: Optional[float] = None,
+        progress_interval: int = 100_000,
     ) -> None:
         self.batch_ids = batch_ids
         self.process_times = process_times
@@ -29,9 +40,17 @@ class _BranchAndBoundSolver:
         self.batches_by_order = batches_by_order
         self.due_dates = due_dates
         self.num_picker = num_picker
+        self.max_seconds = max_seconds
+        self.progress_interval = max(1, progress_interval)
 
         self.best_tardiness: Optional[float] = None
         self.best_sequences: Optional[List[List[int]]] = None
+
+        self.last_stats: Optional[EnumerationStats] = None
+
+        self._start_time = 0.0
+        self._nodes_explored = 0
+        self._timed_out = False
 
     def solve(self) -> ScheduleResult:
         machine_times = [0.0 for _ in range(self.num_picker)]
@@ -39,24 +58,28 @@ class _BranchAndBoundSolver:
         current_completion: Dict[int, float] = {}
         pending_orders: Set[int] = set(self.due_dates.keys())
 
-        self._search(
-            remaining=set(self.batch_ids),
-            machine_times=machine_times,
-            sequences=sequences,
-            current_completion=current_completion,
-            pending_orders=pending_orders,
-            partial_tardiness=0.0,
-        )
+        self._start_time = time.perf_counter()
+        try:
+            self._search(
+                remaining=set(self.batch_ids),
+                machine_times=machine_times,
+                sequences=sequences,
+                current_completion=current_completion,
+                pending_orders=pending_orders,
+                partial_tardiness=0.0,
+            )
+        except TimeoutError:
+            self._timed_out = True
 
         if self.best_sequences is None:
             raise RuntimeError("Failed to produce a feasible schedule")
 
         batch_completion: Dict[int, float] = {}
         for seq in self.best_sequences:
-            time = 0.0
+            time_cursor = 0.0
             for batch in seq:
-                time += self.process_times[batch]
-                batch_completion[batch] = time
+                time_cursor += self.process_times[batch]
+                batch_completion[batch] = time_cursor
 
         order_tardiness: Dict[int, float] = {}
         total_tardiness = 0.0
@@ -70,12 +93,25 @@ class _BranchAndBoundSolver:
             order_tardiness[order] = tardiness
             total_tardiness += tardiness
 
+        self.last_stats = EnumerationStats(
+            explored_nodes=self._nodes_explored,
+            elapsed_seconds=time.perf_counter() - self._start_time,
+            completed=not self._timed_out,
+        )
+
         return ScheduleResult(
             picker_sequences=[seq[:] for seq in self.best_sequences],
             batch_completion=batch_completion,
             order_tardiness=order_tardiness,
             total_tardiness=total_tardiness,
         )
+
+    def _ensure_time_budget(self) -> None:
+        if self.max_seconds is None:
+            return
+        elapsed = time.perf_counter() - self._start_time
+        if elapsed >= self.max_seconds:
+            raise TimeoutError
 
     def _search(
         self,
@@ -87,13 +123,13 @@ class _BranchAndBoundSolver:
         pending_orders: Set[int],
         partial_tardiness: float,
     ) -> None:
+        self._ensure_time_budget()
+
         if not remaining:
             if self.best_tardiness is None or partial_tardiness < self.best_tardiness:
                 self.best_tardiness = partial_tardiness
                 self.best_sequences = [seq[:] for seq in sequences]
-            return
-
-        if self.best_tardiness is not None and partial_tardiness >= self.best_tardiness:
+            self._nodes_explored += 1
             return
 
         for batch in sorted(remaining):
@@ -137,9 +173,6 @@ class _BranchAndBoundSolver:
                     tardiness = max(0.0, new_current_completion.get(order, 0.0) - self.due_dates[order])
                     new_partial += tardiness
 
-                if self.best_tardiness is not None and new_partial >= self.best_tardiness:
-                    continue
-
                 self._search(
                     remaining=new_remaining,
                     machine_times=new_machine_times,
@@ -149,13 +182,24 @@ class _BranchAndBoundSolver:
                     partial_tardiness=new_partial,
                 )
 
+        self._nodes_explored += 1
+        if self._nodes_explored % self.progress_interval == 0:
+            elapsed = time.perf_counter() - self._start_time
+            print(
+                f'[LP] explored {self._nodes_explored:,} nodes in {elapsed:.2f}s; '
+                f'best tardiness so far: {self.best_tardiness if self.best_tardiness is not None else float("inf"):.3f}'
+            )
+
 
 class LinearProgrammingScheduler:
-    def __init__(self) -> None:
+    def __init__(self, *, max_seconds: Optional[float] = None, progress_interval: int = 100_000) -> None:
         self.last_sequences: List[List[int]] = []
         self.last_batch_completion: Dict[int, float] = {}
         self.last_order_tardiness: Dict[int, float] = {}
         self.last_total_tardiness: float = math.inf
+        self.last_stats: Optional[EnumerationStats] = None
+        self._max_seconds = max_seconds
+        self._progress_interval = progress_interval
 
     def __call__(self, df_item_pool: pd.DataFrame, num_picker: int):
         rows = df_item_pool.to_dicts()
@@ -188,21 +232,28 @@ class LinearProgrammingScheduler:
             for order in orders:
                 batches_by_order.setdefault(order, set()).add(batch_id)
 
-        solver = _BranchAndBoundSolver(
+        solver = _ExhaustiveScheduler(
             batch_ids=batch_ids,
             process_times=process_times,
             orders_by_batch=orders_by_batch,
             batches_by_order=batches_by_order,
             due_dates=order_due_dates,
             num_picker=num_picker,
+            max_seconds=self._max_seconds,
+            progress_interval=self._progress_interval,
         )
 
         result = solver.solve()
+
+        self.last_stats = solver.last_stats
 
         self.last_sequences = result.picker_sequences
         self.last_batch_completion = result.batch_completion
         self.last_order_tardiness = result.order_tardiness
         self.last_total_tardiness = result.total_tardiness
+
+        if self.last_stats is not None and not self.last_stats.completed:
+            print('[LP] Time limit reached; returning best schedule found so far.')
 
         df_item_pool['CompletionTime'] = 0.0
         df_item_pool['TardinessOrder'] = 0.0

@@ -1,5 +1,6 @@
+import argparse
 from dataclasses import dataclass
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 from SB_SupportFunction import read_input
 from evaluate_all_sols_check import evaluate_all_sols
@@ -20,13 +21,13 @@ class LinearProgrammingResult:
 
 
 class LinearProgrammingOptimizer:
-    def __init__(self, name_path_input: str):
+    def __init__(self, name_path_input: str, *, max_seconds: Optional[float] = None):
         self.name_path_input = name_path_input
         self.df_item_pool, _ = read_input(name_path_input)
         self.num_items = self.df_item_pool.shape[0]
         self.columns = list(self.df_item_pool.columns)
         self.heavy_item_set = set(self.df_item_pool[self.df_item_pool['weight'] >= VALUE_HEAVY].index)
-        self.scheduler = LinearProgrammingScheduler()
+        self.scheduler = LinearProgrammingScheduler(max_seconds=max_seconds, progress_interval=10_000)
         self.best_result: LinearProgrammingResult | None = None
 
     def _value(self, index: int, column: str) -> float:
@@ -95,7 +96,17 @@ class LinearProgrammingOptimizer:
 
 
 def main() -> None:
-    optimizer = LinearProgrammingOptimizer('1R-20I-150C-2P')
+    parser = argparse.ArgumentParser(description='Exact linear programming scheduler with exhaustive enumeration')
+    parser.add_argument('instance', nargs='?', default='1R-20I-150C-2P', help='Dataset folder name')
+    parser.add_argument(
+        '--time-limit',
+        type=float,
+        default=None,
+        help='Maximum wall-clock seconds allowed for the exhaustive enumeration (default: no limit)',
+    )
+    args = parser.parse_args()
+
+    optimizer = LinearProgrammingOptimizer(args.instance, max_seconds=args.time_limit)
     result = optimizer.solve()
 
     print('Linear Programming Optimizer')
@@ -117,5 +128,13 @@ def main() -> None:
     for order_id in sorted(result.order_tardiness):
         tardiness = result.order_tardiness[order_id]
         print(f'  Order {order_id}: {tardiness:.3f}')
+
+    if optimizer.scheduler.last_stats is not None:
+        stats = optimizer.scheduler.last_stats
+        status = 'complete' if stats.completed else 'partial (time limit reached)'
+        print('Enumeration statistics:')
+        print(f'  Explored nodes : {stats.explored_nodes:,}')
+        print(f'  Elapsed time   : {stats.elapsed_seconds:.2f} seconds')
+        print(f'  Search status  : {status}')
 if __name__ == '__main__':
     main()
