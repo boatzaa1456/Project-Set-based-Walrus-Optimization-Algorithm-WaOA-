@@ -1,4 +1,5 @@
 import csv
+import os
 import pandas as pd
 
 from calculate_process_time import calculate_completion_time
@@ -8,7 +9,7 @@ from routing import precedence_constrained_routing
 
 def evaluate_all_sols_check(new_pop_sol, df_item_poor_batch, heavy_item_set, name_path_input):
     ''' Read File setting parameter : '''
-    path_folder = name_path_input + '\\setting_parameter_' + name_path_input + '.csv'
+    path_folder = os.path.join(name_path_input, f'setting_parameter_{name_path_input}.csv')
     df_setting_parameter = pd.read_csv(path_folder)
 
 
@@ -71,10 +72,32 @@ def evaluate_all_sols_check(new_pop_sol, df_item_poor_batch, heavy_item_set, nam
         list_batching_item_PSO, df_item_poor_new_PSO = batching_1(df_item_poor_batch, list_index,
                                                                                                capacity_picker_1, value_threshold_1,  name_path_input)
 
+        list_index_item_in_batch = []
+
     elif method_batch == 2:
 
         list_batching_item_PSO, df_item_poor_new_PSO, list_index_item_in_batch = batching_open(df_item_poor_batch, list_index,
                                                                                                   capacity_picker_1, value_threshold_1, heavy_item_set, name_path_input)
+
+    def _coerce_nested(values):
+        coerced = []
+        for batch in values:
+            new_batch = []
+            for item in batch:
+                if hasattr(item, 'tolist'):
+                    as_list = item.tolist()
+                    if isinstance(as_list, list):
+                        new_batch.append(int(as_list[0]))
+                    else:
+                        new_batch.append(int(as_list))
+                else:
+                    new_batch.append(int(item))
+            coerced.append(new_batch)
+        return coerced
+
+    list_batching_item_PSO = _coerce_nested(list_batching_item_PSO)
+    if list_index_item_in_batch:
+        list_index_item_in_batch = _coerce_nested(list_index_item_in_batch)
 
     list_batching = []
     num_batch = len(list_batching_item_PSO)
@@ -119,7 +142,8 @@ def evaluate_all_sols_check(new_pop_sol, df_item_poor_batch, heavy_item_set, nam
 
     ''' Calculate process_time each batch :  '''
     process_time_batch = []
-    batch = df_item_poor_batch[df_item_poor_batch['location'].isin(list_batching_item_PSO)]
+    flat_batch_locations = [item for batch in list_batching_item_PSO for item in batch]
+    batch = df_item_poor_batch[df_item_poor_batch['location'].isin(flat_batch_locations)]
 
     for i in range(0, len(list_distance_batch)):
         process_time = calculate_completion_time(list_distance_batch[i], number_item_each_batch[i],
