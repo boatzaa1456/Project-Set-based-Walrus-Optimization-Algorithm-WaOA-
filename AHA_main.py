@@ -1,3 +1,5 @@
+import math
+import os
 import random
 from dataclasses import dataclass, field
 from typing import List, Tuple
@@ -31,6 +33,12 @@ class AHADiscreteState:
     best_evaluation: Tuple | None = None
     best_history: List[float] = field(default_factory=list)
     fitness_evaluations: int = 0
+
+
+def _ensure_directory(path: str) -> None:
+    directory = os.path.dirname(path)
+    if directory:
+        os.makedirs(directory, exist_ok=True)
 
 
 class AHADiscrete:
@@ -209,6 +217,92 @@ class AHADiscrete:
 
         return self.state.best_solution, self.state.best_fitness, self.state.best_evaluation
 
+    def plot_best_history(self, output_path: str = "plots/aha_best_history.svg") -> str:
+        if not self.state.best_history:
+            raise ValueError("No optimisation history recorded; run the solver first.")
+
+        _ensure_directory(output_path)
+
+        width, height = 900, 480
+        margin = 60
+        values = self.state.best_history
+        iterations = list(range(len(values)))
+
+        min_val = min(values)
+        max_val = max(values)
+        if math.isclose(min_val, max_val):
+            max_val = min_val + 1.0
+
+        x_span = max(1, len(iterations) - 1)
+        y_span = max_val - min_val
+
+        def scale_x(index: float) -> float:
+            return margin + (index / x_span) * (width - 2 * margin)
+
+        def scale_y(value: float) -> float:
+            norm = (value - min_val) / y_span
+            return height - margin - norm * (height - 2 * margin)
+
+        points = [f"{scale_x(i):.2f},{scale_y(v):.2f}" for i, v in zip(iterations, values)]
+        path_commands = [f"M {points[0]}"] + [f"L {point}" for point in points[1:]]
+
+        y_ticks = _generate_ticks(min_val, max_val, 5)
+        x_ticks = _generate_ticks(0, len(values) - 1, 5)
+
+        svg_lines = [
+            f"<svg xmlns='http://www.w3.org/2000/svg' width='{width}' height='{height}' viewBox='0 0 {width} {height}'>",
+            "  <style>text { font-family: sans-serif; font-size: 14px; }</style>",
+            f"  <rect width='{width}' height='{height}' fill='white' stroke='black' stroke-width='1' />",
+            f"  <line x1='{margin}' y1='{height - margin}' x2='{width - margin}' y2='{height - margin}' stroke='black' stroke-width='2' />",
+            f"  <line x1='{margin}' y1='{height - margin}' x2='{margin}' y2='{margin}' stroke='black' stroke-width='2' />",
+        ]
+
+        # X ticks and labels
+        for tick in x_ticks:
+            x = scale_x(tick)
+            svg_lines.append(
+                f"  <line x1='{x:.2f}' y1='{height - margin}' x2='{x:.2f}' y2='{height - margin + 10}' stroke='black' />"
+            )
+            svg_lines.append(
+                f"  <text x='{x:.2f}' y='{height - margin + 30}' text-anchor='middle'>{int(round(tick))}</text>"
+            )
+
+        # Y ticks and labels
+        for tick in y_ticks:
+            y = scale_y(tick)
+            svg_lines.append(
+                f"  <line x1='{margin - 10}' y1='{y:.2f}' x2='{margin}' y2='{y:.2f}' stroke='black' />"
+            )
+            svg_lines.append(
+                f"  <text x='{margin - 15}' y='{y + 5:.2f}' text-anchor='end'>{tick:.2f}</text>"
+            )
+
+        svg_lines.append(
+            f"  <path d='{' '.join(path_commands)}' fill='none' stroke='#1976d2' stroke-width='3' stroke-linejoin='round' stroke-linecap='round' />"
+        )
+        svg_lines.append(
+            f"  <text x='{width / 2}' y='{margin / 2}' text-anchor='middle'>Best tardiness per iteration</text>"
+        )
+        svg_lines.append(
+            "</svg>"
+        )
+
+        svg_content = "\n".join(svg_lines) + "\n"
+        with open(output_path, "w", encoding="utf-8") as svg_file:
+            svg_file.write(svg_content)
+
+        return output_path
+
+
+def _generate_ticks(start: float, end: float, count: int) -> List[float]:
+    if count <= 1 or math.isclose(start, end):
+        return [start]
+
+    span = end - start
+    step = span / (count - 1)
+    ticks = [start + step * i for i in range(count)]
+    return ticks
+
 
 def main() -> None:
     random.seed(RANDOM_SEED)
@@ -220,6 +314,9 @@ def main() -> None:
     print("\nBest tardiness:", best_fitness)
     if best_evaluation is not None:
         print("Best evaluation detail:", best_evaluation)
+
+    plot_path = aha.plot_best_history()
+    print(f"Progress plot saved to {plot_path}")
 
 
 if __name__ == "__main__":
