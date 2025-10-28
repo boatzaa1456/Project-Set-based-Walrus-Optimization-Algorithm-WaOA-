@@ -1,3 +1,4 @@
+import os
 import random
 import pandas as pd
 import csv
@@ -7,8 +8,8 @@ def read_input(name_path_input):
     df_item_sas_random = pd.read_csv('df_item_sas_random.csv')
 
     # อ่านไฟล์อื่นๆ
-    duedate_path = f'{name_path_input}\\duedate_{name_path_input}.csv'
-    input_location_path = f'{name_path_input}\\input_location_item_{name_path_input}.csv'
+    duedate_path = os.path.join(name_path_input, f'duedate_{name_path_input}.csv')
+    input_location_path = os.path.join(name_path_input, f'input_location_item_{name_path_input}.csv')
     df_duedate = pd.read_csv(duedate_path, header=None)
     df_item_oder = pd.read_csv(input_location_path, header=None)
 
